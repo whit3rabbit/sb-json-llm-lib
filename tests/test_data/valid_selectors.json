@@ -1,0 +1,6 @@
+{
+    "title_selector": "h1.article-title",
+    "author_selector": "//div[@class='author-info']",
+    "date_selector": "#publish-date",
+    "content_selector": "div.article-content"
+}

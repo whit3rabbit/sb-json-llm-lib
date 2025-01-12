@@ -1,0 +1,6 @@
+pydantic>=2.0.0
+lxml>=4.9.0
+cssselect>=1.2.0
+pytest>=7.0.0
+seleniumbase>=4.33.14
+tinycss2>=1.4.0
