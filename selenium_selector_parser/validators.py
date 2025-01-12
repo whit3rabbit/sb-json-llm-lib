@@ -47,8 +47,13 @@ class SelectorValidator:
         }
 
         for field, selector in selectors.items():
+            # If the key is "url", bypass selector processing and simply include it in the output.
+            if field == "url":
+                result["processed_selectors"][field] = selector
+                continue
+
             normalized_selector = normalize_selector(selector)
-            
+
             # Handle empty selectors
             if not normalized_selector:
                 result["processed_selectors"][field] = {
@@ -69,10 +74,10 @@ class SelectorValidator:
                     "message": selector_info.validation_message,
                     "specificity": selector_info.specificity
                 }
-                
+
                 if not selector_info.is_valid:
                     result["all_valid"] = False
-                    
+
             except InvalidSelectorError as e:
                 result["processed_selectors"][field] = {
                     "type": "invalid",

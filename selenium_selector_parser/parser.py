@@ -20,6 +20,7 @@ from .utils import (
 logger = logging.getLogger(__name__)
 
 class ArticleSelectors(BaseModel):
+    url: str = Field(default="")
     title_selector: str = Field(default="")
     author_selector: str = Field(default="")
     date_selector: str = Field(default="")
