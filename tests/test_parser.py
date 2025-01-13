@@ -6,6 +6,7 @@ def test_parse_json_string_valid():
     parser = SelectorParser()
     json_string = '''
     {
+        "url": "https://example.com",
         "title_selector": "h1.title",
         "author_selector": "//div[@class='author']",
         "date_selector": "#date",
@@ -13,8 +14,9 @@ def test_parse_json_string_valid():
     }
     '''
     result = parser.parse_json_string(json_string)
+    selector_count = sum(1 for key in result["processed_selectors"] if key != "url")
     assert result["all_valid"] is True
-    assert len(result["processed_selectors"]) == 4
+    assert selector_count == 4
 
 def test_parse_json_string_invalid():
     parser = SelectorParser()

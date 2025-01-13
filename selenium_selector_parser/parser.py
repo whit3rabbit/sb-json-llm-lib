@@ -5,6 +5,8 @@ import logging
 from seleniumbase import SB
 import tempfile
 import os
+from bs4 import BeautifulSoup
+import re
 
 from pydantic import BaseModel, Field
 from .exceptions import ParseError, InvalidHTMLError
@@ -14,7 +16,8 @@ from .utils import (
     is_valid_file_path,
     merge_selector_results,
     is_valid_html_content,
-    normalize_selector
+    normalize_selector,
+    is_absolute_url
 )
 
 logger = logging.getLogger(__name__)
@@ -27,10 +30,70 @@ class ArticleSelectors(BaseModel):
     content_selector: str = Field(default="")
 
 class SelectorParser:
-    """Parser for validating and testing selectors using SeleniumBase."""
+    """Parser for validating and testing selectors using BeautifulSoup for local HTML and SeleniumBase for URLs."""
     
     def __init__(self, validator: Optional[SelectorValidator] = None):
         self.validator = validator or SelectorValidator()
+
+    def test_selector_with_bs4(
+        self,
+        soup: BeautifulSoup,
+        selector: str,
+        selector_type: str
+    ) -> Tuple[bool, str, str]:
+        """
+        Test a selector using BeautifulSoup and return results.
+        
+        Args:
+            soup: BeautifulSoup object
+            selector: The selector to test
+            selector_type: Type of selector (e.g., 'css selector', 'xpath', 'id', 'class name')
+            
+        Returns:
+            Tuple of (success, status_message, extracted_content)
+        """
+        if not selector:
+            return True, "Empty selector", ""
+            
+        try:
+            elements = []
+            
+            if selector_type == "xpath":
+                # Convert XPath to CSS where possible, or use lxml's xpath
+                from lxml import etree
+                dom = etree.HTML(str(soup))
+                elements = dom.xpath(selector)
+                # Convert elements to their text content
+                content = ' '.join(e.text.strip() if e.text else '' for e in elements)
+                return bool(elements), "Element found" if elements else "Element not found", content
+                
+            elif selector_type == "css selector":
+                elements = soup.select(selector)
+            elif selector_type == "id":
+                # Remove '#' if present
+                id_val = selector.replace('#', '')
+                elements = [soup.find(id=id_val)] if soup.find(id=id_val) else []
+            elif selector_type == "class name":
+                # Remove '.' if present
+                class_val = selector.replace('.', '')
+                elements = soup.find_all(class_=class_val)
+            elif selector_type == "tag name":
+                elements = soup.find_all(selector)
+                
+            if elements:
+                # Get text content, handling both single elements and lists
+                if isinstance(elements, list):
+                    content = ' '.join(elem.get_text(strip=True) for elem in elements if elem)
+                else:
+                    content = elements.get_text(strip=True)
+                return True, "Element found", content
+            else:
+                return False, "Element not found", ""
+                
+        except Exception as e:
+            error_msg = str(e)
+            logger.debug(f"Selector test failed: {error_msg}")
+            return False, f"Error finding element: {error_msg}", ""
 
     def test_selector_in_browser(
         self, 
@@ -82,7 +145,8 @@ class SelectorParser:
         html_content: Optional[Union[str, Path]] = None
     ) -> Dict[str, Any]:
         """
-        Parse selectors and validate against HTML content using SeleniumBase.
+        Parse selectors and validate against HTML content using BeautifulSoup for local HTML
+        and SeleniumBase for URLs.
         
         Args:
             json_data: JSON string, file path, or dictionary containing selectors
@@ -103,106 +167,153 @@ class SelectorParser:
         except Exception as e:
             raise ParseError(f"Error parsing selectors: {str(e)}")
 
-        # If no HTML content provided, just return processed selectors
-        if not html_content:
-            return selectors
+        # If HTML content is provided, use BeautifulSoup
+        if html_content:
+            return self._validate_with_bs4(selectors, html_content)
+        
+        # If no HTML but URL is provided, use SeleniumBase for scraping
+        url = selectors.get("processed_selectors", {}).get("url", "")
+        if url and is_absolute_url(url):
+            return self._validate_with_url(selectors, url)
+        
+        # If neither HTML nor valid URL provided, return processed selectors
+        return selectors
 
-        # Process HTML content and test selectors using SeleniumBase
+    def _validate_with_bs4(
+        self,
+        selectors: Dict[str, Any],
+        html_content: Union[str, Path]
+    ) -> Dict[str, Any]:
+        """Validate selectors against provided HTML content using BeautifulSoup."""
         try:
-            # Create temporary HTML file
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False) as f:
-                if is_valid_file_path(html_content):
-                    with open(html_content, 'r', encoding='utf-8') as src:
-                        content = src.read()
-                else:
-                    content = str(html_content)
-                    if not is_valid_html_content(content):
-                        raise InvalidHTMLError("Invalid HTML content")
+            # Load HTML content
+            if is_valid_file_path(html_content):
+                with open(html_content, 'r', encoding='utf-8') as f:
+                    content = f.read()
+            else:
+                content = str(html_content)
+                if not is_valid_html_content(content):
+                    raise InvalidHTMLError("Invalid HTML content")
 
-                f.write(f"""
-                    <!DOCTYPE html>
-                    <html>
-                        <head>
-                            <meta charset="utf-8">
-                            <title>Test Page</title>
-                        </head>
-                        <body>
-                            {content.strip()}
-                        </body>
-                    </html>
-                    """)
-                temp_path = f.name
-
+            # Create BeautifulSoup object
+            soup = BeautifulSoup(content, 'html.parser')
             validation_results = {}
-            try:
-                # Test selectors using SeleniumBase
-                with SB(headless2=True) as sb:
-                    file_url = f"file://{temp_path}"
-                    sb.open(file_url)
-                    sb.wait_for_ready_state_complete()
 
-                    # Test each selector
-                    for field, info in selectors["processed_selectors"].items():
-                        selector_type = info["type"]
-                        processed_selector = info["processed"]
+            # Test each selector
+            for field, info in selectors["processed_selectors"].items():
+                # Skip URL field
+                if field == "url":
+                    validation_results[field] = {
+                        "found": True,
+                        "status": "URL field",
+                        "content": info
+                    }
+                    continue
 
-                        # Skip empty selectors
-                        if not processed_selector:
-                            validation_results[field] = {
-                                "found": True,
-                                "status": "Empty selector",
-                                "content": ""
-                            }
-                            continue
+                selector_type = info["type"]
+                processed_selector = info["processed"]
 
-                        # Convert selector type to SeleniumBase format
-                        if selector_type == "css selector":
-                            sb_selector_type = "css selector"
-                        elif selector_type == "xpath":
-                            sb_selector_type = "xpath"
-                        elif selector_type == "id":
-                            sb_selector_type = "id"
-                            processed_selector = processed_selector.lstrip('#')
-                        elif selector_type == "class name":
-                            sb_selector_type = "class name"
-                            processed_selector = processed_selector.lstrip('.')
-                        else:
-                            # Fallback for anything else
-                            sb_selector_type = selector_type
+                # Skip empty selectors
+                if not processed_selector:
+                    validation_results[field] = {
+                        "found": True,
+                        "status": "Empty selector",
+                        "content": ""
+                    }
+                    continue
 
-                        # Test the selector in the browser
-                        success, status, extracted = self.test_selector_in_browser(
-                            sb, processed_selector, sb_selector_type
-                        )
+                # Test the selector with BeautifulSoup
+                success, status, extracted = self.test_selector_with_bs4(
+                    soup, processed_selector, selector_type
+                )
 
-                        validation_results[field] = {
-                            "found": success,
-                            "status": status,
-                            "content": extracted
-                        }
+                validation_results[field] = {
+                    "found": success,
+                    "status": status,
+                    "content": extracted
+                }
 
-            finally:
-                # Clean up the temporary file
-                try:
-                    os.unlink(temp_path)
-                except Exception as e:
-                    logger.warning(f"Error cleaning up temp file: {str(e)}")
-
-            # Convert validation_results to just boolean True/False
-            # (This matches what your tests expect: result["html_validation"]["title_selector"] is True/False)
+            # Convert validation_results to boolean values
             html_validation = {
                 field: info["found"] for field, info in validation_results.items()
             }
 
-            # Merge the boolean results into selectors under "html_validation"
-            selectors = merge_selector_results(selectors, {"html_validation": html_validation})
-
-            return selectors
+            # Merge results
+            return merge_selector_results(selectors, {"html_validation": html_validation})
 
         except Exception as e:
             if isinstance(e, InvalidHTMLError):
                 raise
             raise InvalidHTMLError(f"Error testing selectors: {str(e)}")
+
+    def _validate_with_url(
+        self,
+        selectors: Dict[str, Any],
+        url: str
+    ) -> Dict[str, Any]:
+        """Validate selectors by scraping from URL using SeleniumBase."""
+        try:
+            validation_results = {}
+            with SB(headless2=True) as sb:
+                sb.open(url)
+                sb.wait_for_ready_state_complete()
+
+                # Test each selector
+                for field, info in selectors["processed_selectors"].items():
+                    if field == "url":
+                        validation_results[field] = {
+                            "found": True,
+                            "status": "URL field",
+                            "content": info
+                        }
+                        continue
+
+                    selector_type = info["type"]
+                    processed_selector = info["processed"]
+
+                    if not processed_selector:
+                        validation_results[field] = {
+                            "found": True,
+                            "status": "Empty selector",
+                            "content": ""
+                        }
+                        continue
+
+                    # Convert selector type to SeleniumBase format
+                    if selector_type == "css selector":
+                        sb_selector_type = "css selector"
+                    elif selector_type == "xpath":
+                        sb_selector_type = "xpath"
+                    elif selector_type == "id":
+                        sb_selector_type = "id"
+                        processed_selector = processed_selector.lstrip('#')
+                    elif selector_type == "class name":
+                        sb_selector_type = "class name"
+                        processed_selector = processed_selector.lstrip('.')
+                    else:
+                        sb_selector_type = selector_type
+
+                    # Test the selector in the browser
+                    success, status, extracted = self.test_selector_in_browser(
+                        sb, processed_selector, sb_selector_type
+                    )
+
+                    validation_results[field] = {
+                        "found": success,
+                        "status": status,
+                        "content": extracted
+                    }
+
+            # Convert validation_results to boolean values
+            html_validation = {
+                field: info["found"] for field, info in validation_results.items()
+            }
+
+            # Merge results
+            return merge_selector_results(selectors, {"html_validation": html_validation})
+
+        except Exception as e:
+            raise InvalidHTMLError(f"Error scraping URL: {str(e)}")
 
     def parse_json_string(self, json_string: str) -> Dict[str, Any]:
         """Parse selectors from a JSON string."""

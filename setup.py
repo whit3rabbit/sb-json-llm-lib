@@ -27,14 +27,15 @@ setup(
     python_requires=">=3.8",
     install_requires=[
         "cssselect>=1.2.0",
-        "lxml>=4.9.0",
-        "pydantic>=2.0.0",
+        "lxml>=5.3.0",
+        "pydantic>=2.10.5",
         "seleniumbase>=4.33.14",
         "tinycss2>=1.4.0",
+        "beautifulsoup4>=4.12.3",
     ],
     extras_require={
         "dev": [
-            "pytest>=7.0.0",
+            "pytest>=8.3.4",
             "pytest-cov>=4.0.0",
             "black>=22.0.0",
             "isort>=5.0.0",
